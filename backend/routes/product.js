@@ -226,61 +226,62 @@ router.get("/on-shelf", async (req, res) => {
     console.log("NextID (Number):", nextId);
 
     let count = 0;
-    // Quét từ mới nhất về cũ (Lấy 10 món)
     for (let i = nextId - 1; i >= 1 && count < 10; i--) {
       try {
         const pid = await readContract.indexToProductId(i);
         const trace = await readContract.getTrace(pid);
         const price = toNumber(trace.price);
 
-        // Chỉ lấy sản phẩm ĐÃ CÓ GIÁ (Đã lên kệ)
         if (price > 0) {
-          let finalProductName = trace.productName;
-          // Nếu tên sản phẩm rỗng, đặt tên mặc định
-          if (!finalProductName || finalProductName.trim() === "") {
-            finalProductName = "Sản phẩm nông nghiệp";
-          }
-          // Mặc định lấy tên cũ trong Blockchain trước (để chắc chắn có cái mà hiện)
+          // 1. XỬ LÝ TÊN NÔNG TRẠI (Code cũ của ông - Giữ nguyên)
           let finalFarmName = trace.farmName || "Nông trại";
-
           try {
-            // Tìm nông dân theo số điện thoại
             const farmer = await User.findOne({ phone: trace.creatorPhone });
-
             if (farmer) {
-              // Ưu tiên: Tên Công Ty (companyName) > Tên Thật (fullName)
               if (farmer.companyName && farmer.companyName.trim() !== "") {
                 finalFarmName = farmer.companyName;
               } else if (farmer.fullName) {
                 finalFarmName = farmer.fullName;
               }
             }
-          } catch (dbError) {
-            console.log(
-              "Lỗi tìm tên farm trong DB (Không sao, dùng tên cũ):",
-              dbError.message
-            );
-            // Không làm gì cả, giữ nguyên finalFarmName cũ
+          } catch (dbError) {}
+
+          // 2. XỬ LÝ TÊN SẢN PHẨM (🔥 CODE MỚI THÊM 🔥)
+          // Ưu tiên: Lấy từ MongoDB (vì DB lưu tiếng Việt chuẩn nhất) -> Blockchain -> Mặc định
+          let finalProductName = trace.productName;
+
+          try {
+            // Tìm sản phẩm trong DB bằng ID
+            const productInDB = await Product.findOne({ productId: pid });
+            if (productInDB && productInDB.productName) {
+              finalProductName = productInDB.productName;
+            }
+          } catch (e) {}
+
+          // Nếu vẫn rỗng thì gán mặc định
+          if (!finalProductName || finalProductName.trim() === "") {
+            finalProductName = "Sản phẩm nông nghiệp";
           }
 
-          // Đẩy vào danh sách (Dù tìm DB thành công hay thất bại cũng phải chạy dòng này)
+          // 3. ĐẨY VÀO DANH SÁCH
           products.push({
             id: pid,
-            name: trace.productName,
+
+            // 🔥 SỬA QUAN TRỌNG: Dùng biến finalProductName vừa tính
+            name: finalProductName,
+
             price: price,
             image: trace.managerReceiveImageUrl || trace.plantingImageUrl || "",
-            farm: finalFarmName, // Dùng cái tên đã chốt
+            farm: finalFarmName,
           });
 
           count++;
-          // --- KẾT THÚC ĐOẠN SỬA ---
         }
       } catch (e) {
         console.log(`Lỗi khi đọc sản phẩm ID ${i}:`, e.message);
       }
     }
 
-    console.log(`--> API /on-shelf trả về ${products.length} sản phẩm.`);
     res.json({ success: true, data: products });
   } catch (e) {
     console.error("Lỗi server /on-shelf:", e);
