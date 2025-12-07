@@ -220,7 +220,10 @@ router.get("/retailer-products", jwtAuth, async (req, res) => {
 router.get("/on-shelf", async (req, res) => {
   try {
     const products = [];
-    const nextId = await readContract.nextProductId();
+    const rawNextId = await readContract.nextProductId();
+    const nextId = toNumber(rawNextId);
+
+    console.log("NextID (Number):", nextId);
 
     let count = 0;
     // Quét từ mới nhất về cũ (Lấy 10 món)
