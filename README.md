@@ -40,7 +40,7 @@
 ## 📂 Cấu trúc dự án (Project Structure)
 
 ```bash
-AgriTrace-Backend/
+AgriTrace-Backend
 ├── 📁 blockchain
 │   ├── 📁 contract
 │   │   ├── 📄 ProductTraceability.sol
