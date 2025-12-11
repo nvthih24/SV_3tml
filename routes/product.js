@@ -337,12 +337,23 @@ router.get("/:id", async (req, res) => {
     let finalProductName = trace.productName;
     let finalFarmName = trace.farmName;
 
+    let harvestQty = "Chưa cập nhật";
+    let harvestQuality = "Chưa kiểm định";
+
     try {
       // Tìm trong Database để lấy tên tiếng Việt chuẩn nhất
       const productInDB = await Product.findOne({ productId: productId });
       if (productInDB) {
         if (productInDB.productName) finalProductName = productInDB.productName;
         if (productInDB.farmName) finalFarmName = productInDB.farmName;
+      }
+
+      // 🔥 LẤY DỮ LIỆU TỪ DB (Nếu đã có)
+      if (productInDB.quantity) {
+        harvestQty = `${productInDB.quantity} ${productInDB.unit || "Kg"}`;
+      }
+      if (productInDB.quality) {
+        harvestQuality = productInDB.quality;
       }
 
       // Nếu DB chưa có tên Farm (do cũ quá), thử tìm qua bảng User
@@ -385,6 +396,10 @@ router.get("/:id", async (req, res) => {
         harvest: trace.harvestImageUrl,
         receive: trace.receiveImageUrl,
         delivery: trace.deliveryImageUrl,
+      },
+      harvestInfo: {
+        quantity: harvestQty,
+        quality: harvestQuality,
       },
       status: {
         planting: toNumber(trace.plantingStatus), // 0: Pending, 1: Approved
