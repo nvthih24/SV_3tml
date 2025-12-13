@@ -6,7 +6,7 @@ const jwtAuth = require("../middleware/auth");
 const User = require("../models/User");
 const Product = require("../models/Product");
 const Notification = require("../models/Notification");
-const { sendPushNotification } = require("..models/firebaseConfig");
+const { sendPushNotification } = require("../models/firebaseConfig");
 // ==========================================
 
 router.post("/", jwtAuth, async (req, res) => {
