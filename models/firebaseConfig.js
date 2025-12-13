@@ -1,5 +1,5 @@
 const admin = require("firebase-admin");
-const serviceAccount = require("../../firebase-key.json"); // Trỏ đúng đường dẫn đến file key ông vừa tải
+const serviceAccount = require(path.join(process.cwd(), "firebase-key.json"));
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
