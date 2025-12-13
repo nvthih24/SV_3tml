@@ -6,12 +6,27 @@ const Notification = require("../models/Notification");
 
 const router = express.Router();
 
+const ROLE_KEYS = {
+  farmer: process.env.KEY_FARMER || "FARM123",
+  transporter: process.env.KEY_TRANSPORTER || "SHIP456",
+  moderator: process.env.KEY_MODERATOR || "MOD789",
+  manager: process.env.KEY_MANAGER || "BOSS999",
+};
+
 // ==========================================
 // ĐĂNG KÝ (REGISTER)
 // ==========================================
 router.post("/register", async (req, res) => {
-  const { fullName, phone, email, address, password, confirmPassword, role } =
-    req.body;
+  const {
+    fullName,
+    phone,
+    email,
+    address,
+    password,
+    confirmPassword,
+    role,
+    secretKey,
+  } = req.body;
 
   if (password !== confirmPassword)
     return res.status(400).json({ msg: "Passwords do not match" });
@@ -19,6 +34,14 @@ router.post("/register", async (req, res) => {
   if (role === "admin")
     return res.status(403).json({ msg: "Cannot register as admin" });
 
+  if (!["farmer", "transporter", "moderator", "manager"].includes(role)) {
+    return res.status(400).json({ msg: "Role không hợp lệ" });
+  }
+
+  // --- CHECK 2: Secret Key có đúng với Role không? ---
+  if (secretKey !== ROLE_KEYS[role]) {
+    return res.status(403).json({ msg: "Mã xác thực chức vụ không đúng!" });
+  }
   try {
     let user = await User.findOne({ email });
     if (user) return res.status(400).json({ msg: "User already exists" });
