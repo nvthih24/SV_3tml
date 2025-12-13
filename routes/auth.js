@@ -209,12 +209,25 @@ router.get("/notifications", jwtAuth, async (req, res) => {
 router.post("/save-device-token", async (req, res) => {
   try {
     const { userId, token } = req.body;
+    console.log(`📲 [API] Đang lưu Token cho User ID: ${userId}`);
+    console.log(`🎟️ Token nhận được: ${token.substring(0, 15)}...`); // In 1 đoạn ngắn để check
 
-    // Tìm user và update token mới nhất cho họ
-    await User.findByIdAndUpdate(userId, { fcmToken: token });
+    // Tìm user và update token
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { fcmToken: token },
+      { new: true } // Trả về user mới sau khi update
+    );
 
-    res.status(200).json({ message: "Đã lưu token thiết bị thành công!" });
+    if (updatedUser) {
+      console.log("✅ Đã lưu vào DB thành công!");
+      res.status(200).json({ message: "Đã lưu token thiết bị thành công!" });
+    } else {
+      console.log("❌ Không tìm thấy User để lưu!");
+      res.status(404).json({ error: "User not found" });
+    }
   } catch (err) {
+    console.error("❌ Lỗi Server khi lưu token:", err);
     res.status(500).json(err);
   }
 });
