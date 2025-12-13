@@ -4,7 +4,7 @@ const ContractABI = require("../contract/abi.json");
 const contractAddress = process.env.CONTRACT_ADDRESS;
 
 // Lấy thông tin từ .env
-const rpcUrl = process.env.RPC_URL || "https://rpc.zeroscan.org";
+const rpcUrl = process.env.RPC_URL || "https://purple-tame-shape.matic-amoy.quiknode.pro/0f18094c2a0538b9dd3611308ed2b1f941475e56/";
 const relayerPrivateKey = process.env.PRIVATE_KEY;
 
 if (!relayerPrivateKey) {
