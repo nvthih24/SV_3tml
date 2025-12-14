@@ -1,4 +1,3 @@
-// backend/routes/transaction.routes.js
 const express = require("express");
 const router = express.Router();
 const { contract } = require("../blockchain/utils/signer");
@@ -7,62 +6,92 @@ const User = require("../models/User");
 const Product = require("../models/Product");
 const Notification = require("../models/Notification");
 const { sendPushNotification } = require("../models/firebaseConfig");
-// ==========================================
 
+// ==========================================
+// CÁC HÀM HỖ TRỢ (HELPER FUNCTIONS) - Đưa lên đầu để tránh lỗi
+// ==========================================
+const notifyAllModerators = async (title, message) => {
+  try {
+    const moderators = await User.find({ role: "moderator" });
+    for (const mod of moderators) {
+      await Notification.create({
+        userId: mod._id,
+        title: title,
+        message: message,
+        type: "info",
+      });
+    }
+  } catch (e) {
+    console.error("Lỗi notifyAllModerators", e);
+  }
+};
+
+const notifyRole = async (roleName, title, body) => {
+  try {
+    const users = await User.find({ role: roleName });
+    users.forEach((user) => {
+      if (user.fcmToken) sendPushNotification(user.fcmToken, title, body);
+    });
+  } catch (e) {
+    console.error("Lỗi notifyRole", e);
+  }
+};
+
+const notifyUser = async (userId, title, body) => {
+  try {
+    const user = await User.findById(userId);
+    if (user && user.fcmToken) sendPushNotification(user.fcmToken, title, body);
+  } catch (e) {
+    console.error("Lỗi notifyUser", e);
+  }
+};
+
+// ==========================================
+// API XỬ LÝ GIAO DỊCH
+// ==========================================
 router.post("/", jwtAuth, async (req, res) => {
   try {
     const { action, ...data } = req.body;
-
-    // LẤY THÔNG TIN USER
     const currentUser = await User.findById(req.user.userId);
-    if (!currentUser) {
-      return res.status(404).json({ error: "Không tìm thấy người dùng" });
-    }
+    if (!currentUser) return res.status(404).json({ error: "User not found" });
 
     let tx;
+    console.log(`--> [Blockchain] Action: ${action}`);
 
-    // ======================================================
-    // BƯỚC 1: GỬI LỆNH LÊN BLOCKCHAIN (Chưa ghi DB vội)
-    // ======================================================
-    console.log(`--> Đang thực hiện Blockchain Action: ${action}`);
-
+    // 1. TẠO GIAO DỊCH BLOCKCHAIN
     switch (action) {
       case "addProduct":
         tx = await contract.addProduct(
           data.productName,
           data.productId,
-          data.farmName || currentUser.fullName + "'s Farm",
+          data.farmName || currentUser.fullName,
           data.plantingDate,
           data.plantingImageUrl || "",
           0,
           "",
-          data.seedOrigin || data.seedSource || "",
+          data.seedOrigin || "",
           "",
-          currentUser.phone || "0900000000",
-          currentUser.fullName || "Nông dân",
+          currentUser.phone || "",
+          currentUser.fullName || "",
           0,
           ""
         );
         break;
-
       case "logCare":
-        // (Optional) Check quyền sở hữu tại đây nếu cần
         tx = await contract.logCare(
           data.productId,
           data.careType,
           data.description,
           data.careDate,
           data.careImageUrl || "",
-          currentUser.phone || "0900000000",
-          currentUser.fullName || "Nông dân"
+          currentUser.phone || "",
+          currentUser.fullName || ""
         );
         break;
-
-      // --- NÔNG DÂN THU HOẠCH ---
-      case "harvestProduct": // HOẶC "updateProduct" (tùy tên ông thống nhất)
+      case "harvestProduct":
         tx = await contract.updateProduct(
           data.productId,
-          data.productName || "Sản phẩm",
+          data.productName || "",
           data.farmName || "",
           data.harvestDate,
           data.harvestImageUrl || "",
@@ -70,8 +99,6 @@ router.post("/", jwtAuth, async (req, res) => {
           data.quality || "Loại 1"
         );
         break;
-
-      // --- INSPECTOR DUYỆT ---
       case "approvePlanting":
         tx = await contract.approvePlanting(data.productId);
         break;
@@ -84,8 +111,6 @@ router.post("/", jwtAuth, async (req, res) => {
       case "rejectHarvest":
         tx = await contract.rejectHarvest(data.productId);
         break;
-
-      // --- TRANSPORTER ---
       case "updateReceive":
         tx = await contract.updateReceive(
           data.productId,
@@ -104,8 +129,6 @@ router.post("/", jwtAuth, async (req, res) => {
           data.transportInfo || ""
         );
         break;
-
-      // --- RETAILER ---
       case "updateManagerInfo":
         tx = await contract.updateManagerInfo(
           data.productId,
@@ -117,345 +140,175 @@ router.post("/", jwtAuth, async (req, res) => {
       case "deactivateProduct":
         tx = await contract.deactivateProduct(data.productId);
         break;
-
       default:
-        return res.status(400).json({ error: "Action không hợp lệ" });
+        return res.status(400).json({ error: "Invalid action" });
     }
 
-    // ======================================================
-    // BƯỚC 2: CHỜ BLOCKCHAIN XÁC NHẬN (QUAN TRỌNG)
-    // ======================================================
-    console.log("🚀 Đã gửi lên Blockchain, Tx Hash:", tx.hash);
+    console.log("🚀 Đã gửi Blockchain, Hash:", tx.hash);
 
-    // Cho nó chạy ngầm (Fire and Forget), server không cần đợi
-    tx.wait()
-      .then((receipt) => {
-        console.log(
-          "✅ (Background) Giao dịch đã được đào xong:",
-          receipt.hash
-        );
-      })
-      .catch((err) => {
-        console.error("❌ (Background) Giao dịch bị lỗi:", err);
-      });
-
-    // Giả lập receipt để code bên dưới không bị lỗi
-    const receipt = { hash: tx.hash };
-    // ======================================================
-    // BƯỚC 3: ĐỒNG BỘ DỮ LIỆU VÀO MONGODB (Database Sync)
-    // ======================================================
-    // Chỉ khi code chạy xuống đến đây (không bị lỗi ở trên) thì mới lưu DB
-    const notifyAllModerators = async (title, message) => {
-      const moderators = await User.find({ role: "moderator" });
-      for (const mod of moderators) {
-        await Notification.create({
-          userId: mod._id,
-          title: title,
-          message: message,
-          type: "info", // Màu xanh dương
-        });
-      }
-    };
-
-    // 🛠️ Helper: Hàm gửi Noti cho một nhóm người (Ví dụ: gửi cho tất cả Moderator)
-    const notifyRole = async (roleName, title, body) => {
-      const users = await User.find({ role: roleName }); // roleName phải khớp với DB (ví dụ: 'moderator', 'transporter')
-      users.forEach((user) => {
-        if (user.fcmToken) {
-          sendPushNotification(user.fcmToken, title, body);
-        }
-      });
-    };
-
-    // 🛠️ Helper: Hàm gửi Noti cho 1 người cụ thể (Ví dụ: gửi lại cho Nông dân)
-    const notifyUser = async (userId, title, body) => {
-      const user = await User.findById(userId);
-      if (user && user.fcmToken) {
-        sendPushNotification(user.fcmToken, title, body);
-      }
-    };
-
-    // --- TẠO SẢN PHẨM MỚI ---
-    if (action === "addProduct") {
-      await Product.create({
-        productId: data.productId,
-        productName: data.productName,
-        farmName: data.farmName || currentUser.fullName + "'s Farm",
-        farmOwner: currentUser.fullName,
-        farmPhone: currentUser.phone,
-        plantingDate: data.plantingDate,
-        plantingImageUrl: data.plantingImageUrl,
-        seedSource: data.seedOrigin || data.seedSource,
-        statusCode: 0,
-        plantingStatus: 0,
-        harvestStatus: 0,
-      });
-      await Notification.create({
-        userId: req.user.userId,
-        title: "Gieo trồng thành công",
-        message: `Bạn đã tạo lô hàng ${data.productName} thành công. Vui lòng chờ duyệt.`,
-        type: "success",
-      });
-      await notifyAllModerators(
-        "🌱 Yêu cầu Gieo trồng mới",
-        `Nông dân ${currentUser.fullName} vừa thêm lô hàng ${data.productName}.`
-      );
-      // 🔥 [PUSH NOTIFICATION] -> Báo cho Moderator duyệt ngay
-      await notifyRole(
-        "moderator",
-        "🌱 Yêu cầu Gieo trồng mới",
-        `Nông dân ${currentUser.fullName} vừa thêm lô hàng ${data.productName}. Vào duyệt ngay!`
-      );
-    }
-
-    // --- CẬP NHẬT TRẠNG THÁI ---
-    else if (action === "approvePlanting") {
-      const updatedProduct = await Product.findOneAndUpdate(
-        { productId: data.productId },
-        { plantingStatus: 1, statusCode: 1 },
-        { new: true }
-      );
-
-      // -> Tìm ông Nông dân chủ lô hàng để báo tin vui
-      const farmer = await User.findOne({ phone: updatedProduct.farmPhone });
-      if (farmer) {
-        await Notification.create({
-          userId: farmer._id,
-          title: "Được phê duyệt gieo trồng",
-          message: `Lô hàng ${updatedProduct.productName} của bạn đã được duyệt. Hãy bắt đầu canh tác!`,
-          type: "success",
-        });
-        // 🔥 SỬ DỤNG notifyUser THAY VÌ VIẾT TAY:
-        await notifyUser(
-          farmer._id,
-          "✅ Đã duyệt gieo trồng",
-          `Lô hàng ${updatedProduct.productName} đã được duyệt. Triển khai thôi!`
-        );
-      }
-    } else if (action === "rejectPlanting") {
-      const updatedProduct = await Product.findOneAndUpdate(
-        { productId: data.productId },
-        { plantingStatus: 2 },
-        { new: true }
-      );
-      // -> Báo tin buồn cho Nông dân
-      const farmer = await User.findOne({ phone: updatedProduct.farmPhone });
-      if (farmer) {
-        await Notification.create({
-          userId: farmer._id,
-          title: "Yêu cầu bị từ chối ❌",
-          message: `Yêu cầu gieo trồng ${updatedProduct.productName} không đạt yêu cầu.`,
-          type: "error",
-        });
-
-        // 🔥 SỬ DỤNG notifyUser:
-        await notifyUser(
-          farmer._id,
-          "❌ Từ chối gieo trồng",
-          `Lô hàng ${updatedProduct.productName} không đạt yêu cầu. Vui lòng kiểm tra lại.`
-        );
-      }
-    }
-
-    // --- THU HOẠCH ---
-    else if (action === "harvestProduct") {
-      await Product.findOneAndUpdate(
-        { productId: data.productId },
-        {
-          harvestDate: data.harvestDate,
-          statusCode: 2,
-          harvestStatus: 0,
-
-          quantity: data.quantity || 0,
-          unit: data.unit || "Kg", // Mặc định là Kg nếu không gửi lên
-          quality: data.quality || "Loại 1",
-        }
-      );
-      // Báo cho chính Nông dân
-      await Notification.create({
-        userId: req.user.userId,
-        title: "Đã gửi thu hoạch",
-        message: `Đang chờ kiểm duyệt thu hoạch cho ${
-          data.productName || "lô hàng"
-        }.`,
-        type: "info",
-      });
-      // Báo cho tất cả Moderator
-      await notifyAllModerators(
-        "✂️ Yêu cầu Thu hoạch",
-        `Nông dân ${currentUser.fullName} muốn thu hoạch lô hàng ${data.productName}.`
-      );
-      // 🔥 [PUSH NOTIFICATION] -> Gọi Kiểm duyệt viên (Moderator) vào kiểm hàng gấp
-      await notifyRole(
-        "moderator",
-        "✂️ Yêu cầu Thu hoạch mới",
-        `Nông dân ${currentUser.fullName} vừa thu hoạch ${data.quantity}kg ${data.productName}. Cần kiểm định!`
-      );
-    } else if (action === "approveHarvest") {
-      const updatedProduct = await Product.findOneAndUpdate(
-        { productId: data.productId },
-        { harvestStatus: 1 },
-        { new: true }
-      );
-      // Báo cho Nông dân
-      const farmer = await User.findOne({ phone: updatedProduct.farmPhone });
-      if (farmer) {
-        await Notification.create({
-          userId: farmer._id,
-          title: "Thu hoạch được duyệt ✅",
-          message: `Lô hàng ${updatedProduct.productName} đã sẵn sàng xuất kho.`,
-          type: "success",
-        });
-
-        // 🔥 SỬ DỤNG notifyUser:
-        await notifyUser(
-          farmer._id,
-          "✅ Thu hoạch đạt chuẩn",
-          `Sản phẩm ${updatedProduct.productName} đã được duyệt và sẵn sàng xuất đi.`
-        );
-      }
-      // Có thể thêm thông báo cho Bộ phận Vận chuyển ở đây nếu cần
-      await notifyAllModerators(
-        "🚛 Thu hoạch được duyệt",
-        `Lô hàng ${updatedProduct.productName} đã được duyệt thu hoạch và sẵn sàng vận chuyển.`
-      );
-      // 🔥 [PUSH NOTIFICATION] -> Gọi Đội Vận Chuyển (Transporter) tới bốc hàng
-      await notifyRole(
-        "transporter",
-        "🚛 Có đơn hàng mới",
-        `Lô hàng ${updatedProduct.productName} đã sẵn sàng vận chuyển. Nhận đơn ngay!`
-      );
-    } else if (action === "rejectHarvest") {
-      const updatedProduct = await Product.findOneAndUpdate(
-        { productId: data.productId },
-        { harvestStatus: 2 },
-        { new: true }
-      );
-      // Báo cho Nông dân
-      const farmer = await User.findOne({ phone: updatedProduct.farmPhone });
-      if (farmer) {
-        await Notification.create({
-          userId: farmer._id,
-          title: "Thu hoạch bị từ chối ❌",
-          message: `Vui lòng kiểm tra lại lô hàng ${updatedProduct.productName}.`,
-          type: "error",
-        });
-
-        // 🔥 SỬ DỤNG notifyUser:
-        await notifyUser(
-          farmer._id,
-          "❌ Thu hoạch không đạt",
-          `Chất lượng lô hàng ${updatedProduct.productName} không đạt yêu cầu.`
-        );
-      }
-    }
-
-    // --- VẬN CHUYỂN ---
-    else if (action === "updateReceive") {
-      await Product.findOneAndUpdate(
-        { productId: data.productId },
-        {
-          transporterName: data.transporterName,
-          isReceived: true,
-          statusCode: 2, // Vẫn đang trong luồng vận chuyển
-        }
-      );
-      // Báo cho Tài xế
-      await Notification.create({
-        userId: req.user.userId,
-        title: "Đã nhận hàng 📦",
-        message: `Bạn đã nhận vận chuyển lô hàng ${data.productId}.`,
-        type: "info",
-      });
-      // Báo cho Retailer
-      await Notification.create({
-        userId: req.user.userId,
-        title: "Hàng đang vận chuyển 🚚",
-        message: `Lô hàng ${data.productId} đang trên đường đến cửa hàng.`,
-        type: "info",
-      });
-    } else if (action === "updateDelivery") {
-      await Product.findOneAndUpdate(
-        { productId: data.productId },
-        {
-          isDelivered: true,
-        }
-      );
-      // Báo cho Tài xế
-      await Notification.create({
-        userId: req.user.userId,
-        title: "Giao hàng thành công ✅",
-        message: `Cảm ơn bạn đã hoàn thành chuyến xe.`,
-        type: "success",
-      });
-      // Báo cho Retailer
-      await Notification.create({
-        userId: req.user.userId,
-        title: "Hàng đã đến nơi 🏬",
-        message: `Lô hàng ${data.productId} đã được giao đến cửa hàng.`,
-        type: "success",
-      });
-      // 🔥 [PUSH NOTIFICATION] -> Gọi Nhà Bán Lẻ (Manager/Retailer) ra nhận hàng
-      await notifyRole(
-        "manager",
-        "📦 Hàng đã đến nơi",
-        `Lô hàng ${data.productId} đã được giao đến cửa hàng. Vui lòng xác nhận!`
-      );
-    }
-
-    // --- BÁN LẺ ---
-    else if (action === "updateManagerInfo") {
-      await Product.findOneAndUpdate(
-        { productId: data.productId },
-        {
-          price: data.price,
-          statusCode: 3,
-        }
-      );
-      // Báo cho Retailer
-      await Notification.create({
-        userId: req.user.userId,
-        title: "Đã lên kệ 🏪",
-        message: `Sản phẩm đã được niêm yết giá: ${data.price} VNĐ.`,
-        type: "success",
-      });
-      // 🔥 [PUSH NOTIFICATION] -> Báo lại cho Admin hoặc chính người quản lý (nếu cần)
-      await notifyRole(
-        "admin",
-        "💰 Sản phẩm đã lên kệ",
-        `Sản phẩm ${data.productId} đang được bán với giá ${data.price}.`
-      );
-    } else if (action === "deactivateProduct") {
-      await Product.findOneAndUpdate(
-        { productId: data.productId },
-        {
-          statusCode: 4, // Đã bán hết
-        }
-      );
-      // Báo cho Retailer
-      await Notification.create({
-        userId: req.user.userId,
-        title: "Bán hết 💰",
-        message: `Lô hàng đã được bán xong.`,
-        type: "success",
-      });
-    }
-
-    // ======================================================
-    // BƯỚC 4: TRẢ VỀ KẾT QUẢ
-    // ======================================================
+    // 🔥 2. TRẢ VỀ NGAY CHO APP (Optimistic Response)
+    // App sẽ nhận được phản hồi ngay lập tức, không cần đợi DB/Blockchain
     res.json({
       success: true,
-      txHash: receipt.hash,
-      message: "Giao dịch thành công và đã đồng bộ Database!",
+      txHash: tx.hash,
+      message: "Giao dịch đang được xử lý ngầm!",
     });
+
+    // 🔥 3. XỬ LÝ NGẦM (Lưu DB & Thông báo) - Chạy sau khi đã trả lời App
+    (async () => {
+      try {
+        // Đợi Blockchain xác nhận (chỉ log, không ảnh hưởng App)
+        tx.wait().then((r) => console.log("✅ Block đào xong:", r.hash));
+
+        // --- XỬ LÝ DATABASE ---
+        if (action === "addProduct") {
+          await Product.create({
+            productId: data.productId,
+            productName: data.productName,
+            farmName: data.farmName || currentUser.fullName + "'s Farm",
+            farmOwner: currentUser.fullName,
+            farmPhone: currentUser.phone,
+            plantingDate: data.plantingDate,
+            plantingImageUrl: data.plantingImageUrl,
+            seedSource: data.seedOrigin || data.seedSource,
+            statusCode: 0,
+            plantingStatus: 0,
+            harvestStatus: 0,
+          });
+          // Thông báo
+          await notifyAllModerators(
+            "🌱 Yêu cầu Gieo trồng mới",
+            `Nông dân ${currentUser.fullName} vừa thêm lô hàng ${data.productName}.`
+          );
+          await notifyRole(
+            "moderator",
+            "🌱 Yêu cầu Gieo trồng mới",
+            `Vào duyệt ngay!`
+          );
+        } else if (action === "approvePlanting") {
+          const p = await Product.findOneAndUpdate(
+            { productId: data.productId },
+            { plantingStatus: 1, statusCode: 1 },
+            { new: true }
+          );
+          const farmer = await User.findOne({ phone: p.farmPhone });
+          if (farmer)
+            await notifyUser(
+              farmer._id,
+              "✅ Đã duyệt gieo trồng",
+              `Lô hàng ${p.productName} đã được duyệt.`
+            );
+        } else if (action === "rejectPlanting") {
+          const p = await Product.findOneAndUpdate(
+            { productId: data.productId },
+            { plantingStatus: 2 },
+            { new: true }
+          );
+          const farmer = await User.findOne({ phone: p.farmPhone });
+          if (farmer)
+            await notifyUser(
+              farmer._id,
+              "❌ Từ chối gieo trồng",
+              `Vui lòng kiểm tra lại lô hàng ${p.productName}.`
+            );
+        } else if (action === "harvestProduct") {
+          await Product.findOneAndUpdate(
+            { productId: data.productId },
+            {
+              harvestDate: data.harvestDate,
+              statusCode: 2,
+              harvestStatus: 0,
+              quantity: data.quantity || 0,
+              unit: data.unit || "Kg",
+              quality: data.quality || "Loại 1",
+            }
+          );
+          await notifyAllModerators(
+            "✂️ Yêu cầu Thu hoạch",
+            `Nông dân ${currentUser.fullName} thu hoạch ${data.productName}.`
+          );
+          await notifyRole(
+            "moderator",
+            "✂️ Thu hoạch mới",
+            `Cần kiểm định chất lượng!`
+          );
+        } else if (action === "approveHarvest") {
+          const p = await Product.findOneAndUpdate(
+            { productId: data.productId },
+            { harvestStatus: 1 },
+            { new: true }
+          );
+          const farmer = await User.findOne({ phone: p.farmPhone });
+          if (farmer)
+            await notifyUser(
+              farmer._id,
+              "✅ Thu hoạch đạt chuẩn",
+              `Sản phẩm ${p.productName} đã sẵn sàng xuất kho.`
+            );
+          await notifyRole(
+            "transporter",
+            "🚛 Có đơn hàng mới",
+            `Lô hàng ${p.productName} cần vận chuyển.`
+          );
+        } else if (action === "rejectHarvest") {
+          const p = await Product.findOneAndUpdate(
+            { productId: data.productId },
+            { harvestStatus: 2 },
+            { new: true }
+          );
+          const farmer = await User.findOne({ phone: p.farmPhone });
+          if (farmer)
+            await notifyUser(
+              farmer._id,
+              "❌ Thu hoạch không đạt",
+              `Chất lượng không đạt yêu cầu.`
+            );
+        } else if (action === "updateReceive") {
+          await Product.findOneAndUpdate(
+            { productId: data.productId },
+            {
+              transporterName: data.transporterName,
+              isReceived: true,
+              statusCode: 2,
+            }
+          );
+          await notifyRole(
+            "manager",
+            "🚚 Hàng đang tới",
+            `Lô hàng ${data.productId} đang được vận chuyển.`
+          );
+        } else if (action === "updateDelivery") {
+          await Product.findOneAndUpdate(
+            { productId: data.productId },
+            { isDelivered: true }
+          );
+          await notifyRole(
+            "manager",
+            "📦 Hàng đã đến nơi",
+            `Lô hàng ${data.productId} đã giao xong.`
+          );
+        } else if (action === "updateManagerInfo") {
+          await Product.findOneAndUpdate(
+            { productId: data.productId },
+            { price: data.price, statusCode: 3 }
+          );
+          await notifyRole(
+            "admin",
+            "💰 Sản phẩm lên kệ",
+            `Sản phẩm ${data.productId} đang bán với giá ${data.price}.`
+          );
+        }
+
+        console.log("✅ [Background] Đã đồng bộ DB xong!");
+      } catch (err) {
+        console.error("❌ [Background Error]:", err);
+      }
+    })();
   } catch (error) {
-    console.error("Relayer Error:", error);
-    // Nếu lỗi ở Bước 1, code sẽ nhảy xuống đây -> Database KHÔNG BỊ GHI SAI
-    res.status(500).json({
-      error: "Giao dịch thất bại",
-      details: error.reason || error.message || error.toString(),
-    });
+    console.error("Tx Error:", error);
+    res
+      .status(500)
+      .json({ error: "Giao dịch thất bại", details: error.message });
   }
 });
 
