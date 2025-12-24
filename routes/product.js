@@ -4,6 +4,7 @@ const { readContract } = require("../blockchain/utils/signer");
 const jwtAuth = require("../middleware/auth");
 const User = require("../models/User");
 const Product = require("../models/Product");
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // HÀM CHUYỂN BigInt/Number/string → number an toàn
 const toNumber = (value) => {
@@ -226,6 +227,7 @@ router.get("/on-shelf", async (req, res) => {
     console.log("NextID (Number):", nextId);
 
     let count = 0;
+    // Vòng lặp lấy sản phẩm
     for (let i = nextId - 1; i >= 1 && count < 10; i--) {
       try {
         const pid = await readContract.indexToProductId(i);
@@ -233,7 +235,7 @@ router.get("/on-shelf", async (req, res) => {
         const price = toNumber(trace.price);
 
         if (price > 0) {
-          // 1. XỬ LÝ TÊN NÔNG TRẠI (Code cũ của ông - Giữ nguyên)
+          // --- (Logic xử lý tên nông trại & sản phẩm GIỮ NGUYÊN) ---
           let finalFarmName = trace.farmName || "Nông trại";
           try {
             const farmer = await User.findOne({ phone: trace.creatorPhone });
@@ -246,39 +248,37 @@ router.get("/on-shelf", async (req, res) => {
             }
           } catch (dbError) {}
 
-          // 2. XỬ LÝ TÊN SẢN PHẨM (🔥 CODE MỚI THÊM 🔥)
-          // Ưu tiên: Lấy từ MongoDB (vì DB lưu tiếng Việt chuẩn nhất) -> Blockchain -> Mặc định
           let finalProductName = trace.productName;
-
           try {
-            // Tìm sản phẩm trong DB bằng ID
             const productInDB = await Product.findOne({ productId: pid });
             if (productInDB && productInDB.productName) {
               finalProductName = productInDB.productName;
             }
           } catch (e) {}
 
-          // Nếu vẫn rỗng thì gán mặc định
           if (!finalProductName || finalProductName.trim() === "") {
             finalProductName = "Sản phẩm nông nghiệp";
           }
+          // -----------------------------------------------------------
 
-          // 3. ĐẨY VÀO DANH SÁCH
           products.push({
             id: pid,
-
-            // 🔥 SỬA QUAN TRỌNG: Dùng biến finalProductName vừa tính
             name: finalProductName,
-
             price: price,
             image: trace.managerReceiveImageUrl || trace.plantingImageUrl || "",
             farm: finalFarmName,
           });
 
           count++;
+
+          // 🔥 2. QUAN TRỌNG: Nghỉ 0.2 giây sau khi lấy thành công 1 món
+          // Giúp giảm tải request, tránh bị QuickNode chặn (Limit 15 req/s)
+          await sleep(200);
         }
       } catch (e) {
         console.log(`Lỗi khi đọc sản phẩm ID ${i}:`, e.message);
+        // Nếu lỗi cũng nghỉ xíu cho mạng nó thở
+        await sleep(200);
       }
     }
 
